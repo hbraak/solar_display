@@ -21,6 +21,34 @@ Raspberry Pi 1 Model B mit SH1106 OLED-Display (128×64, I2C) zeigt Victron-Sola
 | Taster Screen-Wechsel | GPIO 24 (BCM) |
 | Cerbo GX | Hostname `einstein`, Port 502 |
 
+## Konfiguration
+
+Beim ersten Start wird `config.json` automatisch aus `config.example.json` erstellt.
+
+```bash
+cp config.example.json config.json   # oder automatisch beim Start
+nano config.json                     # optional anpassen
+```
+
+**Config-Felder:**
+
+| Feld | Default | Beschreibung |
+|---|---|---|
+| `cerbo_host` | `null` | IP/Hostname des Cerbo GX. `null` = Auto-Discovery |
+| `cerbo_port` | `502` | Modbus TCP Port |
+| `latitude` | `50.845` | Breitengrad für Sonnenstunden-Forecast |
+| `longitude` | `7.483` | Längengrad für Sonnenstunden-Forecast |
+| `location_name` | `"Ruppichteroth"` | Standortname (informativ) |
+| `display_rotate` | `2` | Display-Rotation (0 oder 2) |
+| `i2c_port` | `1` | I2C-Port |
+| `i2c_address` | `"0x3C"` | I2C-Adresse des OLED |
+
+### Auto-Discovery
+
+Wenn `cerbo_host` auf `null` steht, scannt das Programm beim Start das lokale /24-Netz nach einem Cerbo GX (Modbus TCP Port 502, Slave 100). Der gefundene Host wird automatisch in `config.json` gespeichert.
+
+> **Hinweis:** `config.json` ist in `.gitignore` und wird nicht ins Repo committed.
+
 ## Setup
 
 ```bash

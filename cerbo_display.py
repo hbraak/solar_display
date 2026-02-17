@@ -11,8 +11,12 @@ Modernized for pymodbus v3+, gpiozero, Python 3.10+.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import signal
+import socket
+import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -30,17 +34,43 @@ from pymodbus.client import ModbusTcpClient
 # Configuration
 # ---------------------------------------------------------------------------
 
-FONT_PATH = "/home/pi/solar_display/fonts/PixelOperator-Bold.ttf"
+SCRIPT_DIR = Path(__file__).resolve().parent
+FONT_PATH = str(SCRIPT_DIR / "fonts" / "PixelOperator-Bold.ttf")
+CONFIG_PATH = SCRIPT_DIR / "config.json"
+CONFIG_EXAMPLE_PATH = SCRIPT_DIR / "config.example.json"
 HOME_DIR = Path.home()
 
-CERBO_HOST: str = "einstein"
-CERBO_PORT: int = 502
+
+def _load_config() -> dict:
+    """Load config.json, creating from example if needed."""
+    if not CONFIG_PATH.exists():
+        if CONFIG_EXAMPLE_PATH.exists():
+            shutil.copy(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
+            log_early = logging.getLogger("cerbo_display")
+            log_early.info("Created config.json from config.example.json")
+        else:
+            return {}
+    try:
+        return json.loads(CONFIG_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_config(cfg: dict) -> None:
+    """Save config dict back to config.json."""
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+
+
+_config = _load_config()
+
+CERBO_HOST: str | None = _config.get("cerbo_host")
+CERBO_PORT: int = _config.get("cerbo_port", 502)
 CERBO_TIMEOUT: float = 5.0
 CERBO_WATCHDOG_S: float = 60.0
 
-I2C_PORT: int = 1
-I2C_ADDRESS: int = 0x3C
-DISPLAY_ROTATE: int = 2
+I2C_PORT: int = _config.get("i2c_port", 1)
+I2C_ADDRESS: int = int(str(_config.get("i2c_address", "0x3C")), 16) if isinstance(_config.get("i2c_address"), str) else _config.get("i2c_address", 0x3C)
+DISPLAY_ROTATE: int = _config.get("display_rotate", 2)
 
 # GPIO pins (BCM)
 GPIO_GENERATOR: int = 17   # Kippschalter 1 → Generator (Relais 3)
@@ -98,6 +128,95 @@ SWITCH_MAP: dict[int, tuple[int, int]] = {
 log = logging.getLogger("cerbo_display")
 
 # ---------------------------------------------------------------------------
+# Auto-Discovery
+# ---------------------------------------------------------------------------
+
+def _get_local_subnet() -> str | None:
+    """Get local IP's /24 base (e.g. '192.168.1.')."""
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "route", "get", "1.1.1.1"],
+            timeout=5, text=True
+        )
+        for part in out.split():
+            if part.count(".") == 3:
+                pieces = part.split(".")
+                try:
+                    if all(0 <= int(p) <= 255 for p in pieces):
+                        return ".".join(pieces[:3]) + "."
+                except ValueError:
+                    continue
+    except Exception:
+        pass
+    # Fallback: connect UDP socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ".".join(ip.split(".")[:3]) + "."
+    except Exception:
+        return None
+
+
+def _check_cerbo(ip: str, port: int = 502, timeout: float = 0.3) -> bool:
+    """Quick check if ip:port has a Cerbo (Modbus slave 100, register 800)."""
+    try:
+        client = ModbusTcpClient(ip, port=port, timeout=timeout)
+        if not client.connect():
+            return False
+        try:
+            result = client.read_input_registers(800, count=1, device_id=100)
+            return not result.isError()
+        finally:
+            client.close()
+    except Exception:
+        return False
+
+
+def discover_cerbo(oled_device=None) -> str | None:
+    """Scan local /24 network for Cerbo GX. Returns IP or None.
+    Shows progress on OLED if device provided."""
+    subnet = _get_local_subnet()
+    if not subnet:
+        log.warning("Could not determine local subnet")
+        return None
+
+    log.info("Scanning %s0/24 for Cerbo GX...", subnet)
+
+    if oled_device:
+        try:
+            with canvas(oled_device) as draw:
+                draw.rectangle(oled_device.bounding_box, outline="white")
+                draw.text((5, 10), "Suche Cerbo...", font=ImageFont.truetype(FONT_PATH, 16), fill="white")
+                draw.text((5, 35), subnet + "x", font=ImageFont.truetype(FONT_PATH, 16), fill="white")
+        except Exception:
+            pass
+
+    # Try common addresses first
+    priority = [1, 65, 100, 200, 2, 10, 50, 150, 254]
+    tried = set()
+    for last in priority:
+        ip = subnet + str(last)
+        tried.add(last)
+        if _check_cerbo(ip):
+            log.info("Cerbo found at %s (priority scan)", ip)
+            return ip
+
+    # Full scan
+    for last in range(1, 255):
+        if last in tried:
+            continue
+        ip = subnet + str(last)
+        if _check_cerbo(ip):
+            log.info("Cerbo found at %s (full scan)", ip)
+            return ip
+
+    log.warning("No Cerbo found on %s0/24", subnet)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Fonts (lazy-loaded singleton)
 # ---------------------------------------------------------------------------
 
@@ -133,7 +252,9 @@ fonts = Fonts()
 class CerboModbus:
     """Persistent Modbus TCP connection to Victron Cerbo GX."""
 
-    def __init__(self, host: str = CERBO_HOST, port: int = CERBO_PORT) -> None:
+    def __init__(self, host: str | None = CERBO_HOST, port: int = CERBO_PORT) -> None:
+        if host is None:
+            raise ValueError("No Cerbo host configured – run discovery first")
         self._host = host
         self._port = port
         self._client = ModbusTcpClient(host, port=port, timeout=CERBO_TIMEOUT)
@@ -618,7 +739,44 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    modbus = CerboModbus()
+    # --- Config / Auto-Discovery ---
+    global CERBO_HOST
+    cerbo_host = CERBO_HOST
+
+    if not cerbo_host:
+        # Init OLED early for discovery status display
+        try:
+            serial_early = i2c(port=I2C_PORT, address=I2C_ADDRESS)
+            oled_early = sh1106(serial_early, rotate=DISPLAY_ROTATE)
+        except Exception:
+            oled_early = None
+
+        cerbo_host = discover_cerbo(oled_device=oled_early)
+        if cerbo_host:
+            _config["cerbo_host"] = cerbo_host
+            _save_config(_config)
+            CERBO_HOST = cerbo_host
+            log.info("Cerbo discovered at %s, saved to config.json", cerbo_host)
+            # Close early OLED so OledDisplay can re-init
+            if oled_early:
+                try:
+                    oled_early.cleanup()
+                except Exception:
+                    pass
+        else:
+            log.error("No Cerbo GX found on network. Set cerbo_host in config.json manually.")
+            if oled_early:
+                try:
+                    with canvas(oled_early) as draw:
+                        draw.rectangle(oled_early.bounding_box, outline="white")
+                        draw.text((5, 10), "Kein Cerbo", font=ImageFont.truetype(FONT_PATH, 16), fill="white")
+                        draw.text((5, 30), "gefunden!", font=ImageFont.truetype(FONT_PATH, 16), fill="white")
+                except Exception:
+                    pass
+            time.sleep(5)
+            sys.exit(1)
+
+    modbus = CerboModbus(host=cerbo_host)
     display = OledDisplay(modbus)
     switches = SwitchController(modbus, display)
     running = True

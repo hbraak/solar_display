@@ -1,0 +1,10 @@
+{
+  "cerbo_host": null,
+  "cerbo_port": 502,
+  "latitude": 50.845,
+  "longitude": 7.483,
+  "location_name": "Ruppichteroth",
+  "display_rotate": 2,
+  "i2c_port": 1,
+  "i2c_address": "0x3C"
+}

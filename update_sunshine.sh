@@ -2,7 +2,11 @@
 # Holt Sonnenstunden-Forecast von Open-Meteo (Köln) für heute, morgen, übermorgen.
 # Schreibt in ~/.sonneheute, ~/.sonnemorgen, ~/.sonneuebermorgen, ~/.datum
 
-API="https://api.open-meteo.com/v1/forecast?latitude=50.845&longitude=7.483&daily=sunshine_duration&timezone=Europe/Berlin&forecast_days=3"
+CONFIG="/home/pi/solar_display/config.json"
+LAT=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c.get('latitude', 50.845))" 2>/dev/null || echo "50.845")
+LON=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c.get('longitude', 7.483))" 2>/dev/null || echo "7.483")
+
+API="https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&daily=sunshine_duration&timezone=Europe/Berlin&forecast_days=3"
 
 JSON=$(curl -sf "$API" 2>/dev/null)
 if [ -z "$JSON" ]; then
