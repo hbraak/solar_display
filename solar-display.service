@@ -1,0 +1,15 @@
+[Unit]
+Description=Solar OLED Display (Cerbo GX)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/solar_display
+ExecStart=/home/pi/solar_display/venv/bin/python3 cerbo_display.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
