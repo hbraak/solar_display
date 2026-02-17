@@ -138,14 +138,14 @@ def _get_local_subnet() -> str | None:
             ["ip", "-4", "route", "get", "1.1.1.1"],
             timeout=5, text=True
         )
-        for part in out.split():
-            if part.count(".") == 3:
-                pieces = part.split(".")
-                try:
-                    if all(0 <= int(p) <= 255 for p in pieces):
-                        return ".".join(pieces[:3]) + "."
-                except ValueError:
-                    continue
+        # Parse "src X.X.X.X" from output
+        parts = out.split()
+        for i, part in enumerate(parts):
+            if part == "src" and i + 1 < len(parts):
+                ip = parts[i + 1]
+                pieces = ip.split(".")
+                if len(pieces) == 4:
+                    return ".".join(pieces[:3]) + "."
     except Exception:
         pass
     # Fallback: connect UDP socket
